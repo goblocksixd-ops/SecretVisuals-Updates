@@ -1,0 +1,20 @@
+# Never commit credentials or local environment files
+.env
+.env.*
+!.env.example
+*.token
+*.pem
+*.pfx
+*.key
+
+# Keep binary releases attached to GitHub Releases, not in git history
+*.exe
+*.msi
+*.zip
+*.7z
+
+# Local/editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
