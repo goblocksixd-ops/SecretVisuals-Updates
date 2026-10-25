@@ -1,0 +1,100 @@
+
+name: Publish update manifest
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  publish-manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hash installer and update latest.json
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { createHash } = require('node:crypto');
+            const release = context.payload.release;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const tag = String(release.tag_name || '');
+            const version = tag.replace(/^v/, '');
+
+            if (!/^\d+\.\d+\.\d+$/.test(version)) {
+              throw new Error(`Use a release tag like v1.5.1; got ${tag}`);
+            }
+
+            const { data: rel } = await github.rest.repos.getRelease({
+              owner, repo, release_id: release.id
+            });
+
+            const expected = `SecretVisuals-Setup-${version}.exe`;
+            const asset = rel.assets.find(a => a.name === expected);
+
+            if (!asset) {
+              throw new Error(`Attach ${expected} to the release first.`);
+            }
+
+            const response = await fetch(asset.browser_download_url, {
+              redirect: 'follow',
+              headers: { 'User-Agent': 'SecretVisuals-Update-Manifest' }
+            });
+
+            if (!response.ok || !response.body) {
+              throw new Error(`Installer download failed: HTTP ${response.status}`);
+            }
+
+            const hash = createHash('sha256');
+            let bytes = 0;
+
+            for await (const chunk of response.body) {
+              const buf = Buffer.from(chunk);
+              hash.update(buf);
+              bytes += buf.length;
+            }
+
+            if (bytes !== asset.size) {
+              throw new Error(`Size mismatch: expected ${asset.size}, got ${bytes}`);
+            }
+
+            const manifest = {
+              version,
+              date: (release.published_at || new Date().toISOString()).slice(0, 10),
+              url: asset.browser_download_url,
+              sha256: hash.digest('hex'),
+              notes: String(release.body || `SecretVisuals ${version}`)
+                .split(/\r?\n/).map(s => s.trim()).filter(Boolean).slice(0, 20)
+            };
+
+            const { data: repoInfo } = await github.rest.repos.get({ owner, repo });
+            const branch = repoInfo.default_branch || 'main';
+            let sha;
+
+            try {
+              const { data: current } = await github.rest.repos.getContent({
+                owner, repo, path: 'latest.json', ref: branch
+              });
+              if (Array.isArray(current) || !current.sha) {
+                throw new Error('latest.json is not a single file');
+              }
+              sha = current.sha;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            await github.rest.repos.createOrUpdateFileContents({
+              owner,
+              repo,
+              path: 'latest.json',
+              branch,
+              message: `chore: publish update manifest ${version}`,
+              content: Buffer.from(
+                JSON.stringify(manifest, null, 2) + '\n', 'utf8'
+              ).toString('base64'),
+              ...(sha ? { sha } : {})
+            });
+
+            core.notice(`latest.json published for ${version}`);
